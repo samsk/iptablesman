@@ -1,0 +1,38 @@
+[Unit]
+Description=iptablesman (drop-in rule sync)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/iptablesman
+ExecStart=${IPTABLESMAN_BIN} --config-dir ${IPTABLESMAN_CONFIG_DIR} --interval ${IPTABLESMAN_INTERVAL} --lock-file ${IPTABLESMAN_LOCK_FILE} ${IPTABLESMAN_PROMETHEUS_ARGS}
+ExecReload=/bin/kill -HUP $MAINPID
+Restart=always
+RestartSec=5
+
+# sandbox: iptables needs netlink + CAP_NET_ADMIN
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_RAW
+AmbientCapabilities=
+NoNewPrivileges=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=full
+ProtectHome=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+ProtectKernelLogs=yes
+ProtectClock=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK
+RestrictNamespaces=yes
+LockPersonality=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+UMask=0027
+KeyringMode=private
+
+[Install]
+WantedBy=multi-user.target
