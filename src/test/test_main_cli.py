@@ -48,6 +48,24 @@ class TestMainCli(unittest.TestCase):
         self.assertTrue(args.resync)
         self.assertTrue(args.test)
 
+    def test_apply_failure_retry_interval_default(self) -> None:
+        from src.constants import DEFAULT_APPLY_FAILURE_RETRY_INTERVAL_SEC
+        from src.main import build_parser
+
+        args = build_parser().parse_args(["--config-dir", "/tmp/x"])
+        self.assertEqual(
+            args.apply_failure_retry_interval,
+            DEFAULT_APPLY_FAILURE_RETRY_INTERVAL_SEC,
+        )
+
+    def test_apply_failure_retry_interval_custom(self) -> None:
+        from src.main import build_parser
+
+        args = build_parser().parse_args(
+            ["--config-dir", "/tmp/x", "--apply-failure-retry-interval", "120"]
+        )
+        self.assertEqual(args.apply_failure_retry_interval, 120.0)
+
     def test_missing_config_dir(self) -> None:
         with self.assertRaises(SystemExit) as ctx:
             main(["--list"])

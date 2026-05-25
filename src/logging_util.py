@@ -1,4 +1,4 @@
-"""Logging: syslog + stderr, ovs-vm-arbiter style."""
+"""Logging: syslog or stderr (mutually exclusive)."""
 
 from __future__ import annotations
 
@@ -32,7 +32,7 @@ class DebugDedupFilter(logging.Filter):
 
 
 def setup_logging(log_level: str, debug: bool = False, no_syslog: bool = False) -> logging.Logger:
-    """Configure logger iptablesman: optional syslog, always stderr."""
+    """Configure logger iptablesman: syslog or stderr, not both (avoids journal dupes)."""
     if debug:
         log_level = "debug"
     level = _LEVEL_MAP.get(log_level.lower(), logging.INFO)
@@ -41,7 +41,9 @@ def setup_logging(log_level: str, debug: bool = False, no_syslog: bool = False) 
     log.propagate = False
     log.handlers.clear()
     log.addFilter(DebugDedupFilter())
-    if not no_syslog:
+    if no_syslog:
+        _add_stderr_handler(log, level)
+    else:
         try:
             h = logging.handlers.SysLogHandler(
                 address="/dev/log",
@@ -51,9 +53,13 @@ def setup_logging(log_level: str, debug: bool = False, no_syslog: bool = False) 
             h.setLevel(level)
             log.addHandler(h)
         except OSError:
-            pass
+            _add_stderr_handler(log, level)
+    return log
+
+
+def _add_stderr_handler(log: logging.Logger, level: int) -> None:
+    """Attach stderr handler with level prefix."""
     eh = logging.StreamHandler(sys.stderr)
     eh.setFormatter(logging.Formatter("%(levelname)s: %(message)s"))
     eh.setLevel(level)
     log.addHandler(eh)
-    return log

@@ -24,3 +24,6 @@ DIR_GONE_ALERT_INTERVAL_SEC = 300.0
 
 # Per-target daemon: full traceback at most this often
 SYNC_FAILURE_LOG_INTERVAL_SEC = 300.0
+
+# Per drop-in: retry iptables apply after this many seconds (CLI default)
+DEFAULT_APPLY_FAILURE_RETRY_INTERVAL_SEC = 300.0

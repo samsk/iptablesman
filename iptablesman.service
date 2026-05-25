@@ -6,7 +6,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 EnvironmentFile=-/etc/default/iptablesman
-ExecStart=${IPTABLESMAN_BIN} --config-dir ${IPTABLESMAN_CONFIG_DIR} --interval ${IPTABLESMAN_INTERVAL} --lock-file ${IPTABLESMAN_LOCK_FILE} ${IPTABLESMAN_PROMETHEUS_ARGS}
+ExecStart=/usr/local/sbin/iptablesman.py --config-dir /usr/local/etc/iptablesman --interval 15 --lock-file /run/iptablesman.lock $IPTABLESMAN_EXTRA_ARGS
 ExecReload=/bin/kill -HUP $MAINPID
 Restart=always
 RestartSec=5

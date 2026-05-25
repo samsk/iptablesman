@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Callable, Optional
 
 from src.apply import sync_file
-from src.constants import DIR_GONE_ALERT_INTERVAL_SEC
+from src.constants import DEFAULT_APPLY_FAILURE_RETRY_INTERVAL_SEC, DIR_GONE_ALERT_INTERVAL_SEC
 from src.rule_tokens import validate_basename, validate_table_or_chain
 from src.host_resolve import HostResolveLogState
 from src.iptables_exec import ensure_chain
@@ -83,6 +83,8 @@ class SyncState:
     prev_basenames: set[str] = field(default_factory=set)
     last_dir_gone_log: Optional[float] = None
     last_sync_exception_log: Optional[float] = None
+    # basename -> unix time when apply may be retried after sync_file failure
+    apply_fail_backoff_until: dict[str, float] = field(default_factory=dict)
 
 
 def sync_target_cycle(
@@ -94,6 +96,7 @@ def sync_target_cycle(
     host_log_state: Optional[HostResolveLogState] = None,
     no_syslog: bool = False,
     test_mode: bool = False,
+    apply_failure_retry_interval: float = DEFAULT_APPLY_FAILURE_RETRY_INTERVAL_SEC,
     now: Callable[[], float] = time.time,
 ) -> None:
     """One sync pass for a target directory."""
@@ -115,6 +118,7 @@ def sync_target_cycle(
 
     state.dir_ever_seen = True
     state.last_dir_gone_log = None
+    tnow = now()
 
     current = set(list_dropin_files(path))
     removed = state.prev_basenames - current
@@ -127,6 +131,10 @@ def sync_target_cycle(
         fp = path / bn
         if not fp.is_file():
             continue
+        if not test_mode:
+            retry_at = state.apply_fail_backoff_until.get(bn)
+            if retry_at is not None and tnow < retry_at:
+                continue
         ok = sync_file(
             iptables_bin,
             target.table,
@@ -138,6 +146,10 @@ def sync_target_cycle(
             test_mode=test_mode,
             now=now,
         )
+        if ok:
+            state.apply_fail_backoff_until.pop(bn, None)
+        elif not test_mode:
+            state.apply_fail_backoff_until[bn] = tnow + apply_failure_retry_interval
         if test_mode and not ok:
             raise RuntimeError(f"iptables test failed for {target.table}/{target.chain}/{bn}")
 

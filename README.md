@@ -48,6 +48,7 @@ iptablesman.py --version
 | `-t`, `--table` | unset | limit to one table (requires `--chain`) |
 | `-N`, `--chain` | unset | limit to one chain (requires `--table`) |
 | `-i`, `--interval` | `15` | daemon resync interval seconds |
+| `--apply-failure-retry-interval` | `300` | seconds before retrying a drop-in after apply failure |
 | `--lock-file` | `/run/iptablesman.lock` | single-instance lock; PID written for `--resync` |
 | `--iptables-path` | `/usr/sbin/iptables` | absolute path to `iptables` binary |
 | `--no-create-chain` | disabled | do not run `iptables -N` for missing chains |
@@ -60,7 +61,7 @@ Daemon mode runs when none of the one-shot flags below are set. `--table` and `-
 | --- | --- | --- |
 | `--log-level` | `info` | `info`, `debug`, `warning`, `error` |
 | `--debug` | disabled | force DEBUG and verbose traces |
-| `--no-syslog` | disabled | log to stderr only |
+| `--no-syslog` | disabled | stderr only (default: syslog only; both would duplicate in journald) |
 
 ### Metrics
 
@@ -172,6 +173,8 @@ Apply strategy per owned comment tag:
 - changed → `-R`
 - new → `-A`
 - removed → `-D`
+
+If `iptables -A` / `-R` (or parse/read) fails for a drop-in, that file is not retried until `--apply-failure-retry-interval` seconds later (default **300**). Other drop-ins on the cycle still sync.
 - safe delete+append only when needed
 
 ### Example drop-in

@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from src.constants import (
+    DEFAULT_APPLY_FAILURE_RETRY_INTERVAL_SEC,
     DEFAULT_INTERVAL,
     DEFAULT_LOCK_FILE,
     SCRIPT_NAME,
@@ -60,6 +61,15 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=DEFAULT_INTERVAL,
         help=f"Daemon resync interval seconds (default {DEFAULT_INTERVAL})",
+    )
+    p.add_argument(
+        "--apply-failure-retry-interval",
+        type=float,
+        default=DEFAULT_APPLY_FAILURE_RETRY_INTERVAL_SEC,
+        help=(
+            "Seconds before retrying a drop-in after apply failure "
+            f"(default {DEFAULT_APPLY_FAILURE_RETRY_INTERVAL_SEC})"
+        ),
     )
     p.add_argument("--list", action="store_true", help="List targets and files; exit")
     p.add_argument("--status", action="store_true", help="Show desired vs live; exit")
@@ -182,10 +192,12 @@ def main(argv: Optional[list[str]] = None) -> int:
     if args.debug:
         log.debug("version %s (%s)", __version__, get_version_string())
 
+    apply_retry = max(1.0, float(args.apply_failure_retry_interval))
     log.info(
-        "daemon start config-dir=%s interval=%s targets=%s",
+        "daemon start config-dir=%s interval=%s apply-failure-retry-interval=%s targets=%s",
         args.config_dir,
         args.interval,
+        apply_retry,
         len(targets),
     )
     if not targets:
@@ -232,6 +244,7 @@ def main(argv: Optional[list[str]] = None) -> int:
                         state=st,
                         host_log_state=host_log_state,
                         no_syslog=args.no_syslog,
+                        apply_failure_retry_interval=apply_retry,
                     )
                 except Exception:
                     cycle_errors += 1
