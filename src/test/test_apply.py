@@ -76,6 +76,59 @@ class TestSyncFileHappyPath(unittest.TestCase):
         append_calls = [c for c in m_run.call_args_list if "-A" in c[0][0]]
         self.assertEqual(append_calls, [])
 
+    @patch("src.apply.chain_snapshot_owned")
+    @patch("src.apply.run_iptables")
+    @patch("src.apply.ensure_chain")
+    def test_noop_when_check_confirms_match(
+        self,
+        m_ensure: MagicMock,
+        m_run: MagicMock,
+        m_snap: MagicMock,
+    ) -> None:
+        """Token mismatch but -C returns 0: no -R (counter preservation)."""
+        # live tokens differ from desired (kernel reordering simulation)
+        live_toks = ["-j", "RETURN", "-m", "comment", "--comment", "r1", "--extra"]
+        m_snap.side_effect = [
+            {"r1": (1, live_toks)},
+            {"r1": (1, live_toks)},
+        ]
+        # -C returns 0 (kernel confirms match)
+        m_run.return_value = _ok(0)
+        with tempfile.TemporaryDirectory() as tmp:
+            fp = Path(tmp) / "r1"
+            fp.write_text("-j RETURN\n", encoding="utf-8")
+            ok = sync_file("/sbin/iptables", "nat", "MYCHAIN", fp, no_create_chain=True)
+        self.assertTrue(ok)
+        replace_calls = [c for c in m_run.call_args_list if "-R" in c[0][0]]
+        self.assertEqual(replace_calls, [])
+        check_calls = [c for c in m_run.call_args_list if "-C" in c[0][0]]
+        self.assertEqual(len(check_calls), 1)
+
+    @patch("src.apply.chain_snapshot_owned")
+    @patch("src.apply.run_iptables")
+    @patch("src.apply.ensure_chain")
+    def test_replaces_when_check_fails(
+        self,
+        m_ensure: MagicMock,
+        m_run: MagicMock,
+        m_snap: MagicMock,
+    ) -> None:
+        """Token mismatch and -C non-zero: -R runs."""
+        live_toks = ["-j", "DROP", "-m", "comment", "--comment", "r1"]
+        m_snap.side_effect = [
+            {"r1": (1, live_toks)},
+            {"r1": (1, live_toks)},
+        ]
+        # -C returns non-zero (rule not in kernel as desired), -R succeeds
+        m_run.side_effect = [_ok(1), _ok(0)]
+        with tempfile.TemporaryDirectory() as tmp:
+            fp = Path(tmp) / "r1"
+            fp.write_text("-j RETURN\n", encoding="utf-8")
+            ok = sync_file("/sbin/iptables", "nat", "MYCHAIN", fp, no_create_chain=True)
+        self.assertTrue(ok)
+        replace_calls = [c for c in m_run.call_args_list if "-R" in c[0][0]]
+        self.assertEqual(len(replace_calls), 1)
+
 
 class TestSyncFileUnresolvedNoState(unittest.TestCase):
     @patch("src.apply.chain_snapshot_owned")
@@ -177,7 +230,8 @@ class TestSyncFileHostSubstitution(unittest.TestCase):
             True,
             [HostIpv4Detail("h.example", True, ["10.0.0.2", "10.0.0.3"])],
         )
-        m_run.return_value = _ok()
+        # -C returns 1 (desired rule not live), -R returns 0
+        m_run.side_effect = [_ok(1), _ok(0)]
         live_body = ["-d", "10.0.0.3", "-j", "RETURN", "-m", "comment", "--comment", "r1"]
         m_snap.side_effect = [
             {"r1": (1, live_body)},

@@ -9,8 +9,10 @@ from typing import Callable, Optional
 
 from src.rule_tokens import validate_basename
 from src.dropin import parse_dropin_blocks
+from src.host_cache import HostResolveCache
 from src.host_resolve import (
     HostResolveLogState,
+    HostIpv4Detail,
     emit_host_syslog_alert,
     format_no_ipv4_resolved_msg,
     hosts_resolve_ipv4,
@@ -38,6 +40,9 @@ def sync_file(
     host_log_state: Optional[HostResolveLogState] = None,
     no_syslog: bool = False,
     test_mode: bool = False,
+    resolve_hosts: bool = True,
+    hosts_only: bool = False,
+    host_cache: Optional[HostResolveCache] = None,
     now: Callable[[], float] = time.time,
 ) -> bool:
     """Apply one drop-in with diff apply and @host gating."""
@@ -58,14 +63,34 @@ def sync_file(
     if not test_mode:
         ensure_chain(iptables_bin, table, chain, no_create=no_create_chain)
 
-    config_tags = set(tags)
     tnow = now()
-
     host_ok_list: list[bool] = []
     desired_tokens_list: list[list[str]] = []
+    active_tags: list[str] = []
     for b, tag in zip(blocks, tags):
+        if hosts_only and not b.hosts:
+            continue
         if b.hosts:
-            ok, ipv4_details = hosts_resolve_ipv4(b.hosts)
+            ipv4_details: list[HostIpv4Detail]
+            if resolve_hosts:
+                ok, ipv4_details = hosts_resolve_ipv4(b.hosts)
+                if host_cache is not None and ok:
+                    host_cache.update(table, chain, tag, ipv4_details)
+            else:
+                mapping_cached = (
+                    host_cache.mapping_for(table, chain, tag, b.hosts)
+                    if host_cache is not None
+                    else None
+                )
+                if mapping_cached is None:
+                    host_ok_list.append(False)
+                    desired_tokens_list.append([])
+                    continue
+                ok = True
+                ipv4_details = [
+                    HostIpv4Detail(h, True, [mapping_cached[h]])
+                    for h in b.hosts
+                ]
             detail = [(d.hostname, d.ok) for d in ipv4_details]
             host_ok_list.append(ok)
             mapping = {d.hostname: d.chosen_ip for d in ipv4_details if d.ok}
@@ -73,9 +98,10 @@ def sync_file(
             desired_tokens_list.append(
                 body + ["-m", "comment", "--comment", tag]
             )
+            active_tags.append(tag)
             suffix = rule_tag_key(tag, basename)
             tag_display = basename if not suffix else f"{basename}/{suffix}"
-            if host_log_state is not None:
+            if host_log_state is not None and resolve_hosts:
                 host_log_state.notify(
                     table=table,
                     chain=chain,
@@ -120,10 +146,19 @@ def sync_file(
                 )
                 emit_host_syslog_alert(msg, no_syslog=no_syslog)
         else:
+            if hosts_only:
+                continue
             host_ok_list.append(True)
             desired_tokens_list.append(
                 b.rule_tokens + ["-m", "comment", "--comment", tag]
             )
+            active_tags.append(tag)
+
+    if hosts_only and not host_ok_list:
+        return True
+
+    config_tags = set(active_tags) if hosts_only else set(tags)
+    iter_tags = active_tags if hosts_only else tags
 
     if test_mode:
         return _validate_desired_rules_test_mode(
@@ -165,15 +200,25 @@ def sync_file(
 
     gated_live = any(
         not ok and tag in live
-        for ok, tag in zip(host_ok_list, tags)
+        for ok, tag in zip(host_ok_list, iter_tags)
     )
 
-    for ok, tag, desired in zip(host_ok_list, tags, desired_tokens_list):
+    for ok, tag, desired in zip(host_ok_list, iter_tags, desired_tokens_list):
         if not ok:
             continue
         if tag in live:
             rulenum, live_toks = live[tag]
             if tokens_without_comment(live_toks) == tokens_without_comment(desired):
+                continue
+            # Token compare can diverge from kernel repr (option reordering, `!`
+            # placement).  Confirm with -C before running -R to avoid unnecessary
+            # counter resets.
+            check_rr = run_iptables(
+                [iptables_bin, "-t", table, "-C", chain] + desired,
+                capture=True,
+                check=False,
+            )
+            if check_rr.returncode == 0:
                 continue
             rr = run_iptables(
                 [iptables_bin, "-t", table, "-R", chain, str(rulenum)] + desired,

@@ -85,40 +85,40 @@ class TestMainCli(unittest.TestCase):
             rc = main(["--config-dir", str(root), "--list", "--no-syslog"])
         self.assertEqual(rc, 0)
 
-    @patch("src.main.time.sleep", side_effect=[None, None, SystemExit(0)])
-    @patch(
-        "src.main.sync_target_cycle",
-        side_effect=RuntimeError("boom"),
-    )
-    @patch("src.main.time.time", return_value=0.0)
-    @patch("src.main.setup_logging")
-    def test_daemon_exception_rate_limited(
-        self,
-        m_setup_log: MagicMock,
-        _m_time: object,
-        _m_sync: object,
-        _m_sleep: object,
-    ) -> None:
-        mlog = MagicMock()
-        m_setup_log.return_value = mlog
+    @patch("src.main.run_daemon_loop")
+    def test_daemon_invokes_run_loop(self, m_run: MagicMock) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             (root / "nat" / "C").mkdir(parents=True)
             lock_file = root / "daemon.lock"
-            with self.assertRaises(SystemExit):
-                main(
-                    [
-                        "--config-dir",
-                        str(root),
-                        "--no-syslog",
-                        "--interval",
-                        "1",
-                        "--lock-file",
-                        str(lock_file),
-                    ]
-                )
-        self.assertEqual(mlog.exception.call_count, 1)
-        self.assertEqual(mlog.error.call_count, 2)
+            rc = main(
+                [
+                    "--config-dir",
+                    str(root),
+                    "--no-syslog",
+                    "--no-config-watch",
+                    "--lock-file",
+                    str(lock_file),
+                ]
+            )
+        self.assertEqual(rc, 0)
+        m_run.assert_called_once()
+
+    def test_dns_and_metrics_interval_parse(self) -> None:
+        from src.main import build_parser
+
+        args = build_parser().parse_args(
+            [
+                "--config-dir",
+                "/tmp/x",
+                "--dns-interval",
+                "15",
+                "--metrics-interval",
+                "30",
+            ]
+        )
+        self.assertEqual(args.dns_interval, 15.0)
+        self.assertEqual(args.metrics_interval, 30.0)
 
 
 if __name__ == "__main__":

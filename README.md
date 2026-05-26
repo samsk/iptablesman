@@ -47,7 +47,12 @@ iptablesman.py --version
 | `--config-dir` | *(required)* | config root; rules in `<config-dir>/<table>/<chain>/` |
 | `-t`, `--table` | unset | limit to one table (requires `--chain`) |
 | `-N`, `--chain` | unset | limit to one chain (requires `--table`) |
-| `-i`, `--interval` | `15` | daemon resync interval seconds |
+| `-i`, `--interval` | `60` | wake for discovery, apply-failure retries |
+| `--dns-interval` | `15` | `@host` DNS-only pass (no static rule reconcile) |
+| `--metrics-interval` | same as `--interval` | Prometheus `iptables-save` scrape (if metrics enabled) |
+| `--config-watch` / `--no-config-watch` | on | inotify on config-dir |
+| `--config-watch-scope` | `target` | `target` or `full` sync on file change |
+| `--config-watch-min-interval` | `5` | min seconds between inotify-triggered syncs |
 | `--apply-failure-retry-interval` | `300` | seconds before retrying a drop-in after apply failure |
 | `--lock-file` | `/run/iptablesman.lock` | single-instance lock; PID written for `--resync` |
 | `--iptables-path` | `/usr/sbin/iptables` | absolute path to `iptables` binary |

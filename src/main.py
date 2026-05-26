@@ -15,12 +15,14 @@ from typing import Optional
 
 from src.constants import (
     DEFAULT_APPLY_FAILURE_RETRY_INTERVAL_SEC,
+    DEFAULT_CONFIG_WATCH_MIN_INTERVAL_SEC,
+    DEFAULT_DNS_INTERVAL,
     DEFAULT_INTERVAL,
     DEFAULT_LOCK_FILE,
     SCRIPT_NAME,
-    SYNC_FAILURE_LOG_INTERVAL_SEC,
     SYSLOG_PROCNAME,
 )
+from src.daemon import DaemonConfig, run_daemon_loop
 from src.dropin import parse_dropin_blocks
 from src.locking import acquire_single_instance_lock
 from src.logging_util import setup_logging
@@ -69,6 +71,39 @@ def build_parser() -> argparse.ArgumentParser:
         help=(
             "Seconds before retrying a drop-in after apply failure "
             f"(default {DEFAULT_APPLY_FAILURE_RETRY_INTERVAL_SEC})"
+        ),
+    )
+    p.add_argument(
+        "--dns-interval",
+        type=float,
+        default=DEFAULT_DNS_INTERVAL,
+        help=f"Seconds between @host DNS-only passes (default {DEFAULT_DNS_INTERVAL})",
+    )
+    p.add_argument(
+        "--metrics-interval",
+        type=float,
+        default=None,
+        help="Prometheus counter scrape interval; default same as --interval",
+    )
+    p.add_argument(
+        "--config-watch",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Watch config-dir with inotify (default: on)",
+    )
+    p.add_argument(
+        "--config-watch-scope",
+        choices=("target", "full"),
+        default="target",
+        help="inotify sync scope: target or full config-dir (default: target)",
+    )
+    p.add_argument(
+        "--config-watch-min-interval",
+        type=float,
+        default=DEFAULT_CONFIG_WATCH_MIN_INTERVAL_SEC,
+        help=(
+            "Min seconds between inotify-triggered syncs "
+            f"(default {DEFAULT_CONFIG_WATCH_MIN_INTERVAL_SEC})"
         ),
     )
     p.add_argument("--list", action="store_true", help="List targets and files; exit")
@@ -193,16 +228,28 @@ def main(argv: Optional[list[str]] = None) -> int:
         log.debug("version %s (%s)", __version__, get_version_string())
 
     apply_retry = max(1.0, float(args.apply_failure_retry_interval))
+    interval = max(1.0, float(args.interval))
+    dns_interval = max(1.0, float(args.dns_interval))
+    metrics_interval = max(
+        1.0,
+        float(args.metrics_interval if args.metrics_interval is not None else interval),
+    )
+    watch_min = max(1.0, float(args.config_watch_min_interval))
     log.info(
-        "daemon start config-dir=%s interval=%s apply-failure-retry-interval=%s targets=%s",
+        "daemon start config-dir=%s interval=%s dns-interval=%s metrics-interval=%s "
+        "apply-failure-retry-interval=%s config-watch=%s scope=%s watch-min-interval=%s targets=%s",
         args.config_dir,
-        args.interval,
+        interval,
+        dns_interval,
+        metrics_interval,
         apply_retry,
+        args.config_watch,
+        args.config_watch_scope,
+        watch_min,
         len(targets),
     )
     if not targets:
         log.warning("no sync targets (no config-dir/<table>/<chain>/ directories found)")
-    states: dict[tuple[str, str], SyncState] = {}
     host_log_state = HostResolveLogState()
     metrics_state = MetricsState()
     prom: Optional[PrometheusExporter] = None
@@ -226,63 +273,36 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     signal.signal(signal.SIGHUP, _on_sighup)
 
+    daemon_cfg = DaemonConfig(
+        config_dir=args.config_dir,
+        table=args.table,
+        chain=args.chain,
+        interval=interval,
+        dns_interval=dns_interval,
+        metrics_interval=metrics_interval,
+        apply_failure_retry_interval=apply_retry,
+        no_create_chain=args.no_create_chain,
+        no_syslog=args.no_syslog,
+        debug=args.debug,
+        config_watch=bool(args.config_watch),
+        config_watch_scope=str(args.config_watch_scope),
+        config_watch_min_interval=watch_min,
+        full_sync_on_interval=not bool(args.config_watch),
+    )
+
     with acquire_single_instance_lock(Path(args.lock_file)):
-        while True:
-            cycle_start = time.time()
-            cycle_errors = 0
-            targets = resolve_targets(args.config_dir, args.table, args.chain)
-            monitored_rules = 0
-            for t in targets:
-                monitored_rules += _count_target_rules(t)
-                key = (t.table, t.chain)
-                st = states.setdefault(key, SyncState())
-                try:
-                    sync_target_cycle(
-                        t,
-                        iptables_bin,
-                        no_create_chain=args.no_create_chain,
-                        state=st,
-                        host_log_state=host_log_state,
-                        no_syslog=args.no_syslog,
-                        apply_failure_retry_interval=apply_retry,
-                    )
-                except Exception:
-                    cycle_errors += 1
-                    tnow = time.time()
-                    due = (
-                        args.debug
-                        or st.last_sync_exception_log is None
-                        or (tnow - st.last_sync_exception_log) >= SYNC_FAILURE_LOG_INTERVAL_SEC
-                    )
-                    if due:
-                        log.exception("sync failed %s/%s", t.table, t.chain)
-                        st.last_sync_exception_log = tnow
-                    else:
-                        log.error(
-                            "sync failed %s/%s (traceback suppressed; full log every %ss, or use --debug)",
-                            t.table,
-                            t.chain,
-                            int(SYNC_FAILURE_LOG_INTERVAL_SEC),
-                        )
-            cycle_end = time.time()
-            metrics_state.update_cycle(
-                monitored_chains=len(targets),
-                monitored_rules=monitored_rules,
-                cycle_duration_seconds=(cycle_end - cycle_start),
-                errors_in_cycle=cycle_errors,
-                now_ts=cycle_end,
-            )
-            chain_counters, rule_counters = _collect_monitored_counters(iptables_bin, targets)
-            if prom is not None:
-                prom.push(
-                    metrics_state.snapshot(),
-                    chain_counters=chain_counters,
-                    rule_counters=rule_counters,
-                )
-            if forced["now"]:
-                forced["now"] = False
-                continue
-            time.sleep(max(1.0, float(args.interval)))
+        run_daemon_loop(
+            cfg=daemon_cfg,
+            iptables_bin=iptables_bin,
+            resolve_targets=resolve_targets,
+            host_log_state=host_log_state,
+            metrics_state=metrics_state,
+            prom=prom,
+            collect_counters=_collect_monitored_counters,
+            count_rules=_count_target_rules,
+            forced=forced,
+        )
+    return 0
 
 
 def _count_target_rules(target: Target) -> int:

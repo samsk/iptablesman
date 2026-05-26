@@ -8,7 +8,9 @@ SCRIPT_NAME = "iptablesman.py"
 SYSLOG_PROCNAME = b"iptablesman.py"
 
 DEFAULT_IPTABLES = "/usr/sbin/iptables"
-DEFAULT_INTERVAL = 15
+DEFAULT_INTERVAL = 60
+DEFAULT_DNS_INTERVAL = 15
+DEFAULT_CONFIG_WATCH_MIN_INTERVAL_SEC = 5.0
 DEFAULT_LOCK_FILE = "/run/iptablesman.lock"
 
 # Drop-in filename / @name id (iptables comment segment)
